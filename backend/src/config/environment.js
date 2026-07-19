@@ -1,9 +1,5 @@
 const path = require('path');
-// Load appropriate .env file based on environment
-const envFile = process.env.NODE_ENV === 'production'
-  ? path.resolve(__dirname, '../../.env.production')
-  : path.resolve(__dirname, '../../.env');
-require('dotenv').config({ path: envFile });
+require('dotenv').config({ path: path.resolve(__dirname, '../../.env') });
 
 // ─── Required variable definitions ───────────────────────────────────────────
 // These variables MUST exist in all environments. Missing any causes startup failure.
