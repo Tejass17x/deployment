@@ -1,50 +1,45 @@
 const env = require('../../../config/environment');
 const logger = require('../../../common/logger/winston');
-const queue = require('../../../common/queue/queue');
 
-// ─── Resend API client (direct send, bypasses queue) ──────────────────────
-const sendViaResend = async (to, subject, html) => {
-  if (!env.email.resendKey) {
-    logger.warn('[EMAIL RESEND] No RESEND_API_KEY configured. Skipping Resend API.');
-    return false;
+// ─── Wait… nodemailer/lazy-required inside sendEmail ──────────────────────
+// We do NOT import nodemailer at the top because the auth-email helper is
+// loaded very early; nodemailer is only needed at runtime.
+// ──O resolved OTP emails bypass the Redis queue entirely for instant delivery.─
+
+const sendEmail = async (to, subject, html) => {
+  const text = htmlToPlainText(html);
+  logger.info(`[EMAIL] 📨 Sending directly — to="${to}" subject="${subject}"`);
+
+  // Strategy 1: Resend API (preferred — instant, no SMTP setup)
+  if (env.email.resendKey) {
+    try {
+      const axios = require('axios');
+      const startTime = Date.now();
+      const response = await axios.post('https://api.resend.com/emails', {
+        from: 'Research Connect <onboarding@resend.dev>',
+        to,
+        subject,
+        html
+      }, {
+        headers: {
+          'Authorization': `Bearer ${env.email.resendKey}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 15000
+      });
+      const duration = Date.now() - startTime;
+      logger.info(`[EMAIL] ✅ Resend SUCCESS — to="${to}" id=${response.data?.id || 'N/A'} duration=${duration}ms`);
+      return true;
+    } catch (err) {
+      const status = err.response?.status;
+      const body = err.response?.data ? JSON.stringify(err.response.data).slice(0, 300) : 'N/A';
+      logger.error(`[EMAIL] ❌ Resend FAILED (status=${status} body=${body}). Falling back to SMTP.`);
+    }
   }
 
-  try {
-    const axios = require('axios');
-    const startTime = Date.now();
-    const response = await axios.post('https://api.resend.com/emails', {
-      from: `Research Connect <onboarding@resend.dev>`,
-      to,
-      subject,
-      html
-    }, {
-      headers: {
-        'Authorization': `Bearer ${env.email.resendKey}`,
-        'Content-Type': 'application/json'
-      },
-      timeout: 15000
-    });
-    const duration = Date.now() - startTime;
-
-    logger.info(`[EMAIL RESEND] ✅ SUCCESS — to="${to}" subject="${subject}" status=${response.status} id=${response.data?.id || 'N/A'} duration=${duration}ms`);
-    return true;
-  } catch (err) {
-    const errorDetails = {
-      message: err.message,
-      status: err.response?.status,
-      statusText: err.response?.statusText,
-      body: err.response?.data ? JSON.stringify(err.response.data).slice(0, 500) : 'N/A',
-      code: err.code
-    };
-    logger.error(`[EMAIL RESEND] ❌ FAILED — to="${to}" subject="${subject}" details=${JSON.stringify(errorDetails)}`);
-    return false;
-  }
-};
-
-// ─── Nodemailer SMTP fallback (direct send, bypasses queue) ───────────────
-const sendViaSMTP = async (to, subject, html, text) => {
+  // Strategy 2: SMTP (nodemailer)
   if (!env.email.user || !env.email.pass) {
-    logger.warn('[EMAIL SMTP] No EMAIL_USER/EMAIL_PASS configured. Skipping SMTP fallback.');
+    logger.error(`[EMAIL] ❌ No EMAIL_USER/EMAIL_PASS configured either. Email NOT sent.`);
     return false;
   }
 
@@ -52,28 +47,23 @@ const sendViaSMTP = async (to, subject, html, text) => {
     const nodemailer = require('nodemailer');
     const transporter = nodemailer.createTransport({
       service: 'gmail',
-      auth: {
-        user: env.email.user,
-        pass: env.email.pass
-      }
+      auth: { user: env.email.user, pass: env.email.pass }
     });
 
-    const mailOptions = {
+    const startTime = Date.now();
+    const info = await transporter.sendMail({
       from: `"Research Connect" <${env.email.user}>`,
       to,
       subject,
       html,
       text
-    };
-
-    const startTime = Date.now();
-    const info = await transporter.sendMail(mailOptions);
+    });
     const duration = Date.now() - startTime;
 
-    logger.info(`[EMAIL SMTP] ✅ SUCCESS — to="${to}" subject="${subject}" messageId=${info.messageId} duration=${duration}ms`);
+    logger.info(`[EMAIL] ✅ SMTP SUCCESS — to="${to}" messageId=${info.messageId} duration=${duration}ms`);
     return true;
   } catch (err) {
-    logger.error(`[EMAIL SMTP] ❌ FAILED — to="${to}" subject="${subject}" error=${err.message}`);
+    logger.error(`[EMAIL] ❌ SMTP FAILED — to="${to}" error=${err.message}`);
     return false;
   }
 };
@@ -338,44 +328,8 @@ const securityTipsBlock = () => `
   </div>
 `;
 
-const sendEmail = async (to, subject, html) => {
-  const text = htmlToPlainText(html);
-  const context = { to, subject, timestamp: new Date().toISOString() };
 
-  logger.info(`[EMAIL] 📨 Starting send — to="${to}" subject="${subject}"`, context);
 
-  // Strategy 1: Enqueue to BullMQ background worker (primary path)
-  try {
-    const jobData = { to, subject, html, text };
-    const jobId = await queue.enqueue('email', jobData);
-    if (jobId) {
-      logger.info(`[EMAIL] ✅ Enqueued to BullMQ — to="${to}" subject="${subject}" jobId=${jobId}`);
-      return true;
-    }
-    logger.warn(`[EMAIL] ⚠️ BullMQ enqueue returned null (Redis probably down). Falling back to direct send.`);
-  } catch (queueError) {
-    logger.warn(`[EMAIL] ⚠️ BullMQ enqueue failed: ${queueError.message}. Falling back to direct send.`);
-  }
-
-  // Strategy 2: Direct Resend API (bypasses queue)
-  const resendOk = await sendViaResend(to, subject, html);
-  if (resendOk) {
-    logger.info(`[EMAIL] 📨 Delivered via direct Resend — to="${to}" subject="${subject}"`);
-    return true;
-  }
-  logger.warn(`[EMAIL] ⚠️ Direct Resend failed for to="${to}". Trying SMTP fallback...`);
-
-  // Strategy 3: Direct SMTP fallback
-  const smtpOk = await sendViaSMTP(to, subject, html, text);
-  if (smtpOk) {
-    logger.info(`[EMAIL] 📨 Delivered via SMTP fallback — to="${to}" subject="${subject}"`);
-    return true;
-  }
-
-  // All strategies failed
-  logger.error(`[EMAIL] ❌ ALL delivery strategies FAILED — to="${to}" subject="${subject}"`);
-  return false;
-};
 
 const sendRegistrationOtp = async (to, otp, firstName = '') => {
   const safeName = escapeHtml(firstName);

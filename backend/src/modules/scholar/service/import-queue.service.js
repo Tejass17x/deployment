@@ -85,9 +85,14 @@ class ImportQueueService {
     // Trigger via RedisQueue
     try {
       const queue = require('../../../common/queue/queue');
-      await queue.enqueue('scholar_import', { jobId: job._id, userId, authorId: metadata.authorId });
+      const jobQueued = await queue.enqueue('scholar_import', { jobId: job._id, userId, authorId: metadata.authorId });
+      if (!jobQueued) {
+        // queue.enqueue returns null when Redis is unavailable
+        logger.warn(`[ImportQueue] Redis unavailable for scholar_import. Processing sync inline.`);
+        setImmediate(() => this.processNextJob());
+      }
     } catch (queueErr) {
-      logger.error(`Failed to enqueue in RedisQueue, falling back: ${queueErr.message}`);
+      logger.error(`[ImportQueue] Redis enqueue error: ${queueErr.message}. Processing sync inline.`);
       // Fallback: trigger worker processing inline asynchronously
       setImmediate(() => this.processNextJob());
     }
@@ -187,15 +192,18 @@ class ImportQueueService {
 
   /**
    * Start the background queue worker process
+   * Falls back to MongoDB polling when Redis is unavailable.
    */
   runQueueWorker() {
     if (this.workerInterval) return;
 
     logger.info('Initializing background Scholar import queue worker...');
-    
+
     // Check and resume interrupted jobs on startup
     this.resumeInterruptedJobs().then(() => {
       const queue = require('../../../common/queue/queue');
+
+      // Attempt to register BullMQ worker (works only if Redis is up)
       queue.process('scholar_import', async (jobData) => {
         const { jobId, userId, authorId } = jobData;
         const job = await importRepository.findById(jobId);
@@ -203,7 +211,6 @@ class ImportQueueService {
           return;
         }
 
-        // Atomically set running
         job.status = 'running';
         job.lastAttemptAt = new Date();
         await job.save();
@@ -214,20 +221,15 @@ class ImportQueueService {
           if (!this.scholarService) {
             this.scholarService = require('./scholar.service');
           }
-
-          // Run the actual import logic
           await this.scholarService.syncScholarData(job._id, userId, authorId);
           job.status = 'completed';
           job.progress = 100;
           job.completedAt = new Date();
           await job.save();
-
           await this.log(job._id, userId, 'Import job completed successfully!', 'info');
         } catch (err) {
           logger.error(`Error processing import job ${job._id}: ${err.message}`, err);
           await this.log(job._id, userId, `Job failed: ${err.message} \n ${err.stack}`, 'error');
-
-          // Increment retry count
           job.retryCount += 1;
           job.error = { message: err.message, stack: err.stack };
 
@@ -235,18 +237,31 @@ class ImportQueueService {
             job.status = 'failed';
             await this.log(job._id, userId, 'Max retries exceeded. Job marked as failed.', 'error');
           } else {
-            job.status = 'pending'; // Re-enqueue for retry
+            job.status = 'pending';
             await this.log(job._id, userId, `Re-enqueued job for retry attempt ${job.retryCount + 1}`, 'warn');
-            // Re-enqueue in RedisQueue
             await queue.enqueue('scholar_import', jobData);
           }
-          
           await job.save();
         }
       });
     });
 
-    this.workerInterval = true;
+    // Start MongoDB polling fallback — runs every 15s when Redis is unavailable
+    this.workerInterval = setInterval(() => {
+      this.processNextJob();
+    }, 15000);
+
+    logger.info('[ImportQueue] MongoDB polling fallback started (every 15s).');
+  }
+
+  /**
+   * Stop worker (for tests/shutdown)
+   */
+  stopQueueWorker() {
+    if (this.workerInterval) {
+      clearInterval(this.workerInterval);
+    }
+    this.workerInterval = null;
   }
 
   /**
