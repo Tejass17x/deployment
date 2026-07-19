@@ -29,7 +29,30 @@ class SocketGateway {
   init(server) {
     this.io = new Server(server, {
       cors: {
-        origin: env.clientUrl,
+        origin: function (origin, callback) {
+          // Allow requests with no origin (server-to-server)
+          if (!origin) return callback(null, true);
+          // Allow any *.vercel.app domain
+          try {
+            const { hostname } = new URL(origin);
+            if (hostname === 'vercel.app' || hostname.endsWith('.vercel.app')) {
+              return callback(null, true);
+            }
+          } catch {}
+          // Allow localhost for dev
+          if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+            return callback(null, true);
+          }
+          // Allow the CLIENT_URL env var
+          if (origin === env.clientUrl) {
+            return callback(null, true);
+          }
+          // Allow all in dev mode, block in production
+          if (env.nodeEnv !== 'production') {
+            return callback(null, true);
+          }
+          callback(new Error('Origin not allowed by CORS'));
+        },
         methods: ['GET', 'POST']
       },
       pingTimeout: 20000,

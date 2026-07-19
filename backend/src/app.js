@@ -43,6 +43,9 @@ const app = express();
 // Disable X-Powered-By
 app.disable("x-powered-by");
 
+// Trust Render's proxy so req.ip returns real client IP (needed for rate limiting, audit logs)
+app.set("trust proxy", 1);
+
 // Mount the API Gateway
 app.use(gatewayRouter);
 
