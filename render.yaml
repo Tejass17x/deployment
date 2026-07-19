@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: research-connect-backend
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+    healthCheckPath: /health
+    # Adjust the health check path if you have a dedicated endpoint
+  - type: static
+    name: research-connect-frontend
+    env: node
+    buildCommand: cd frontend && npm install && npm run build
+    staticPublishPath: frontend/dist
+    # Render will serve the static files from this directory
