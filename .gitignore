@@ -42,3 +42,6 @@ backend/uploads/
 
 # DNS cache and temp config files
 backend/src/config/database/temp/
+# Temp/generated files
+all_code.txt
+all_code*

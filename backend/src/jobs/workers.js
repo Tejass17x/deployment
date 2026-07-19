@@ -9,12 +9,15 @@ const env = require('../config/environment');
  * Supports Resend API and falls back to Nodemailer SMTP.
  */
 const emailWorkerHandler = async (job) => {
-  logger.info(`[Email Worker] Processing mail dispatch to ${job.to}`);
-  
+  const jobContext = { to: job.to, subject: job.subject, jobId: job.id };
+  logger.info(`[Email Worker] 📨 Processing mail dispatch to ${job.to}`, jobContext);
+
+  // Strategy 1: Resend API
   if (env.email.resendKey) {
     try {
       const axios = require('axios');
-      await axios.post('https://api.resend.com/emails', {
+      const startTime = Date.now();
+      const response = await axios.post('https://api.resend.com/emails', {
         from: `Research Connect <onboarding@resend.dev>`,
         to: job.to,
         subject: job.subject,
@@ -23,33 +26,55 @@ const emailWorkerHandler = async (job) => {
         headers: {
           'Authorization': `Bearer ${env.email.resendKey}`,
           'Content-Type': 'application/json'
-        }
+        },
+        timeout: 15000
       });
-      logger.info(`[Email Worker] Resend API successfully sent mail to ${job.to}`);
+      const duration = Date.now() - startTime;
+
+      logger.info(`[Email Worker] ✅ Resend API SUCCESS — to="${job.to}" subject="${job.subject}" status=${response.status} id=${response.data?.id || 'N/A'} duration=${duration}ms`, jobContext);
       return;
     } catch (err) {
-      logger.error(`[Email Worker] Resend API failed: ${err.message}. Falling back to SMTP.`);
+      const status = err.response?.status;
+      const resendBody = err.response?.data ? JSON.stringify(err.response.data).slice(0, 500) : 'N/A';
+      logger.error(`[Email Worker] ❌ Resend API FAILED — to="${job.to}" status=${status} body=${resendBody} error=${err.message}`, jobContext);
     }
+  } else {
+    logger.warn(`[Email Worker] ⚠️ No RESEND_API_KEY set. Skipping Resend API.`, jobContext);
   }
 
-  const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-      user: env.email.user,
-      pass: env.email.pass
-    }
-  });
+  // Strategy 2: Nodemailer SMTP fallback
+  if (!env.email.user || !env.email.pass) {
+    logger.error(`[Email Worker] ❌ Neither Resend nor SMTP configured. Email to ${job.to} will NOT be sent.`, jobContext);
+    throw new Error('No email provider configured (neither RESEND_API_KEY nor EMAIL_USER/EMAIL_PASS)');
+  }
 
-  const mailOptions = {
-    from: `"Research Connect" <${env.email.user}>`,
-    to: job.to,
-    subject: job.subject,
-    html: job.html,
-    text: job.text
-  };
+  try {
+    const nodemailer = require('nodemailer');
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: env.email.user,
+        pass: env.email.pass
+      }
+    });
 
-  await transporter.sendMail(mailOptions);
-  logger.info(`[Email Worker] Nodemailer SMTP successfully sent mail to ${job.to}`);
+    const mailOptions = {
+      from: `"Research Connect" <${env.email.user}>`,
+      to: job.to,
+      subject: job.subject,
+      html: job.html,
+      text: job.text
+    };
+
+    const startTime = Date.now();
+    const info = await transporter.sendMail(mailOptions);
+    const duration = Date.now() - startTime;
+
+    logger.info(`[Email Worker] ✅ SMTP SUCCESS — to="${job.to}" subject="${job.subject}" messageId=${info.messageId} duration=${duration}ms`, jobContext);
+  } catch (err) {
+    logger.error(`[Email Worker] ❌ SMTP FAILED — to="${job.to}" error=${err.message}`, jobContext);
+    throw err; // Let BullMQ handle retry
+  }
 };
 
 /**

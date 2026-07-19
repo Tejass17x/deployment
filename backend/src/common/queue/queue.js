@@ -14,11 +14,17 @@ try {
     maxRetriesPerRequest: null, // Required by BullMQ
     enableOfflineQueue: false, // Don't queue commands when disconnected
     retryStrategy: (times) => {
-      // Stop retrying after first failure - Redis is optional
-      if (times > 1) {
-        return null; // Stop reconnecting
-      }
-      return 1000;
+      // Upstash frequently drops idle connections. We MUST keep retrying.
+      // Exponential backoff: 50ms → 100ms → 150ms ... max 3000ms
+      return Math.min(times * 50, 3000);
+    },
+    keepAlive: 30000,          // Send TCP keepalive every 30s to prevent idle drops
+    connectionTimeout: 10000,  // Timeout if connection takes >10s
+    maxRetriesPerRequest: null,
+    lazyConnect: true,         // Don't connect until first operation
+    reconnectOnError: (err) => {
+      logger.warn(`[BULLMQ] Redis reconnect triggered by error: ${err.message}`);
+      return true;             // Always try to reconnect
     }
   };
   connection = new IORedis(REDIS_URI, options);
@@ -28,15 +34,25 @@ try {
     logger.info('[BULLMQ] Redis connected for queue management.');
   });
 
+  connection.on('ready', () => {
+    redisAvailable = true;
+    logger.info('[BULLMQ] Redis client ready.');
+  });
+
   connection.on('error', (err) => {
     if (redisAvailable) {
       redisAvailable = false;
-      logger.warn('[BULLMQ] Redis unavailable. Queue jobs will be processed inline.');
+      logger.warn(`[BULLMQ] Redis error: ${err.message}. Queue jobs will be processed inline.`);
     }
   });
 
   connection.on('close', () => {
     redisAvailable = false;
+    logger.warn('[BULLMQ] Redis connection closed. Will auto-reconnect.');
+  });
+
+  connection.on('reconnecting', (delay) => {
+    logger.info(`[BULLMQ] Redis reconnecting in ${delay}ms...`);
   });
 } catch (err) {
   logger.warn('[BULLMQ] Redis not available. Queue jobs will be processed inline.');
