@@ -31,7 +31,7 @@ export const SocketProvider = ({ children }) => {
     }
 
     const token = localStorage.getItem('token');
-    const socketUrl = import.meta.env.VITE_SOCKET_URL || 'https://research-connect-backend.onrender.com';
+    const socketUrl = import.meta.env.VITE_SOCKET_URL || 'https://deployment-w687.onrender.com';
 
     setConnecting(true);
 
