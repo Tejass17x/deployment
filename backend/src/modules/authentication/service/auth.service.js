@@ -154,20 +154,10 @@ class AuthService {
     const cooldownKey = `otp_cooldown:${email.toLowerCase()}:registration`;
     await cacheService.set(cooldownKey, { createdAt: Date.now() }, 60);
 
-    // Send verification email (blocking with SMTP timeout — guaranteed delivery)
-    console.log(`[REGISTER_DEBUG] Sending registration OTP to ${email.toLowerCase()} | otp=${otpCode} | firstName=${firstName}`);
-    try {
-      const emailSent = await emailHelper.sendRegistrationOtp(email.toLowerCase(), otpCode, firstName);
-      console.log(`[REGISTER_DEBUG] sendRegistrationOtp returned: ${emailSent}`);
-      if (emailSent) {
-        logger.info(`[AUTH] Registration OTP sent successfully to ${email.toLowerCase()}`);
-      } else {
-        logger.warn(`[AUTH] Registration OTP email returned failure for ${email.toLowerCase()}`);
-      }
-    } catch (err) {
-      console.log(`[REGISTER_DEBUG] sendRegistrationOtp threw: ${err.message}`, err);
-      logger.error(`[AUTH ERROR] Registration OTP email exception for ${email.toLowerCase()}:`, err);
-    }
+    // Send verification email — wait up to 60s, SMTP timeouts at 45s
+    console.log(`[REGISTER_DEBUG] Sending OTP to ${email.toLowerCase()} | otp=${otpCode}`);
+    const emailSent = await emailHelper.sendRegistrationOtp(email.toLowerCase(), otpCode);
+    console.log(`[REGISTER_DEBUG] Email result: ${emailSent}`);
     this._logSecurityEvent(user._id, email, 'REGISTER_PENDING', 'User registration initialized, OTP code sent.', clientInfo)
       .catch(err => logger.error('[AUTH ERROR] Failed to log security event:', err));
 
@@ -206,14 +196,9 @@ class AuthService {
     const cooldownKey = `otp_cooldown:${email.toLowerCase()}:registration`;
     await cacheService.set(cooldownKey, { createdAt: Date.now() }, 60);
 
-    // Resend registration OTP (blocking with timeout — guaranteed delivery)
-    logger.info(`[AUTH] Resending registration OTP email to ${email.toLowerCase()}...`);
-    try {
-      const emailSent = await emailHelper.sendRegistrationOtp(email.toLowerCase(), otpCode);
-      if (!emailSent) logger.warn(`[AUTH] Registration OTP resend returned failure for ${email.toLowerCase()}`);
-    } catch (err) {
-      logger.error(`[AUTH ERROR] Registration OTP resend exception for ${email.toLowerCase()}:`, err);
-    }
+    // Resend registration OTP
+    const resent = await emailHelper.sendRegistrationOtp(email.toLowerCase(), otpCode);
+    if (!resent) logger.warn(`[AUTH] Registration OTP resend failed for ${email.toLowerCase()}`);
     this._logSecurityEvent(user._id, email, 'REGISTER_OTP_RESENT', 'Registration OTP resent.', clientInfo)
       .catch(err => logger.error('[AUTH ERROR] Failed to log security event:', err));
 
@@ -564,14 +549,9 @@ class AuthService {
     const cooldownKey = `otp_cooldown:${email.toLowerCase()}:forgot_password`;
     await cacheService.set(cooldownKey, { createdAt: Date.now() }, 60);
 
-    // Send forgot-password OTP (blocking with timeout — guaranteed delivery)
-    logger.info(`[AUTH] Sending forgot-password OTP email to ${user.email}...`);
-    try {
-      const emailSent = await emailHelper.sendForgotPasswordOtp(user.email, otpCode);
-      if (!emailSent) logger.warn(`[AUTH] Forgot-password OTP returned failure for ${user.email}`);
-    } catch (err) {
-      logger.error(`[AUTH ERROR] Forgot-password OTP exception for ${user.email}:`, err);
-    }
+    // Send forgot-password OTP
+    const sentPw = await emailHelper.sendForgotPasswordOtp(user.email, otpCode);
+    if (!sentPw) logger.warn(`[AUTH] Forgot-password OTP failed for ${user.email}`);
     this._logSecurityEvent(user._id, email, 'FORGOT_PASSWORD_REQUEST', 'Forgot password request initialized. Reset OTP sent.', clientInfo)
       .catch(err => logger.error('[AUTH ERROR] Failed to log security event:', err));
 
