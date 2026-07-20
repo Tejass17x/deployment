@@ -154,16 +154,18 @@ class AuthService {
     const cooldownKey = `otp_cooldown:${email.toLowerCase()}:registration`;
     await cacheService.set(cooldownKey, { createdAt: Date.now() }, 60);
 
-    // Send verification email (blocking with timeout — guaranteed delivery, no orphaned promises)
-    logger.info(`[AUTH] Sending registration OTP email to ${email.toLowerCase()}...`);
+    // Send verification email (blocking with SMTP timeout — guaranteed delivery)
+    console.log(`[REGISTER_DEBUG] Sending registration OTP to ${email.toLowerCase()} | otp=${otpCode} | firstName=${firstName}`);
     try {
       const emailSent = await emailHelper.sendRegistrationOtp(email.toLowerCase(), otpCode, firstName);
+      console.log(`[REGISTER_DEBUG] sendRegistrationOtp returned: ${emailSent}`);
       if (emailSent) {
         logger.info(`[AUTH] Registration OTP sent successfully to ${email.toLowerCase()}`);
       } else {
-        logger.warn(`[AUTH] Registration OTP email returned failure for ${email.toLowerCase()} (check Resend/SMTP logs)`);
+        logger.warn(`[AUTH] Registration OTP email returned failure for ${email.toLowerCase()}`);
       }
     } catch (err) {
+      console.log(`[REGISTER_DEBUG] sendRegistrationOtp threw: ${err.message}`, err);
       logger.error(`[AUTH ERROR] Registration OTP email exception for ${email.toLowerCase()}:`, err);
     }
     this._logSecurityEvent(user._id, email, 'REGISTER_PENDING', 'User registration initialized, OTP code sent.', clientInfo)
