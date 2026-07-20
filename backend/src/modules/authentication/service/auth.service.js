@@ -154,9 +154,16 @@ class AuthService {
     const cooldownKey = `otp_cooldown:${email.toLowerCase()}:registration`;
     await cacheService.set(cooldownKey, { createdAt: Date.now() }, 60);
 
-    // Send verification email (non-blocking, fire-and-forget)
-    emailHelper.sendRegistrationOtp(email.toLowerCase(), otpCode, firstName)
-      .catch(err => logger.error('[AUTH ERROR] Failed to send Registration OTP:', err));
+    // Send verification email (await with bounded timeout — guarantees delivery without blocking >5s)
+    const emailPromise = emailHelper.sendRegistrationOtp(email.toLowerCase(), otpCode, firstName);
+    const emailTimeout = new Promise(resolve => setTimeout(() => resolve('__TIMEOUT__'), 5000));
+    const emailResult = await Promise.race([emailPromise, emailTimeout]);
+    if (emailResult === '__TIMEOUT__') {
+      // SMTP is slow — fire-and-forget the rest in background
+      emailPromise.then(sent => { if (!sent) logger.warn('[AUTH] Delayed registration email failed'); })
+        .catch(err => logger.error('[AUTH ERROR] Delayed registration email error:', err));
+      logger.warn('[AUTH] Registration email taking >5s, continuing in background');
+    }
     this._logSecurityEvent(user._id, email, 'REGISTER_PENDING', 'User registration initialized, OTP code sent.', clientInfo)
       .catch(err => logger.error('[AUTH ERROR] Failed to log security event:', err));
 
@@ -195,8 +202,15 @@ class AuthService {
     const cooldownKey = `otp_cooldown:${email.toLowerCase()}:registration`;
     await cacheService.set(cooldownKey, { createdAt: Date.now() }, 60);
 
-    emailHelper.sendRegistrationOtp(email.toLowerCase(), otpCode)
-      .catch(err => logger.error('[AUTH ERROR] Failed to send Registration OTP:', err));
+    // Resend registration OTP (await with bounded timeout)
+    const emailPromise = emailHelper.sendRegistrationOtp(email.toLowerCase(), otpCode);
+    const emailTimeout = new Promise(resolve => setTimeout(() => resolve('__TIMEOUT__'), 5000));
+    const emailResult = await Promise.race([emailPromise, emailTimeout]);
+    if (emailResult === '__TIMEOUT__') {
+      emailPromise.then(sent => { if (!sent) logger.warn('[AUTH] Delayed registration OTP resend failed'); })
+        .catch(err => logger.error('[AUTH ERROR] Delayed registration OTP resend error:', err));
+      logger.warn('[AUTH] Registration OTP resend taking >5s, continuing in background');
+    }
     this._logSecurityEvent(user._id, email, 'REGISTER_OTP_RESENT', 'Registration OTP resent.', clientInfo)
       .catch(err => logger.error('[AUTH ERROR] Failed to log security event:', err));
 
@@ -547,8 +561,15 @@ class AuthService {
     const cooldownKey = `otp_cooldown:${email.toLowerCase()}:forgot_password`;
     await cacheService.set(cooldownKey, { createdAt: Date.now() }, 60);
 
-    emailHelper.sendForgotPasswordOtp(user.email, otpCode)
-      .catch(err => logger.error('[AUTH ERROR] Failed to send ForgotPassword OTP:', err));
+    // Send forgot-password OTP (await with bounded timeout)
+    const emailPromise = emailHelper.sendForgotPasswordOtp(user.email, otpCode);
+    const emailTimeout = new Promise(resolve => setTimeout(() => resolve('__TIMEOUT__'), 5000));
+    const emailResult = await Promise.race([emailPromise, emailTimeout]);
+    if (emailResult === '__TIMEOUT__') {
+      emailPromise.then(sent => { if (!sent) logger.warn('[AUTH] Delayed forgot-password email failed'); })
+        .catch(err => logger.error('[AUTH ERROR] Delayed forgot-password email error:', err));
+      logger.warn('[AUTH] Forgot-password email taking >5s, continuing in background');
+    }
     this._logSecurityEvent(user._id, email, 'FORGOT_PASSWORD_REQUEST', 'Forgot password request initialized. Reset OTP sent.', clientInfo)
       .catch(err => logger.error('[AUTH ERROR] Failed to log security event:', err));
 
