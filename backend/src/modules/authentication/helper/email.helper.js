@@ -8,16 +8,52 @@ const logger = require('../../../common/logger/winston');
 
 const sendEmail = async (to, subject, html) => {
   const text = htmlToPlainText(html);
-  console.log(`[EMAIL_DEBUG] sendEmail called — to="${to}" subject="${subject}"`);
-  console.log(`[EMAIL_DEBUG] ResendKey exists: ${!!env.email.resendKey}, EmailUser exists: ${!!env.email.user}, EmailPass exists: ${!!env.email.pass}`);
+  console.log(`[EMAIL_DEBUG] sendEmail — to="${to}" subject="${subject}"`);
+  console.log(`[EMAIL_DEBUG] Config — ResendKey:${!!env.email.resendKey} SMTP_User:${!!env.email.user} SMTP_Pass:${!!env.email.pass}`);
   logger.info(`[EMAIL] Sending — to="${to}" subject="${subject}"`);
 
-  // Strategy 1: Resend API (preferred — instant, no SMTP setup)
+  // ── Strategy 1: SMTP (Gmail) ────────────────────────────────────────
+  // Tried FIRST because Resend's free onboarding@resend.dev only sends
+  // to verified recipients. SMTP delivers to ANY email address.
+  let smtpError = null;
+  if (env.email.user && env.email.pass) {
+    try {
+      const nodemailer = require('nodemailer');
+      console.log(`[EMAIL_DEBUG] Trying SMTP (Gmail) for ${to}...`);
+      const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: { user: env.email.user, pass: env.email.pass },
+        connectionTimeout: 15000,
+        greetingTimeout: 15000,
+        socketTimeout: 20000
+      });
+
+      const startTime = Date.now();
+      const info = await transporter.sendMail({
+        from: `"Research Connect" <${env.email.user}>`,
+        to,
+        subject,
+        html,
+        text
+      });
+      const duration = Date.now() - startTime;
+      console.log(`[EMAIL_DEBUG] ✅ SMTP success for ${to} — id=${info.messageId} duration=${duration}ms`);
+      logger.info(`[EMAIL] ✅ SMTP SUCCESS — to="${to}" messageId=${info.messageId} duration=${duration}ms`);
+      return true;
+    } catch (err) {
+      smtpError = err.message;
+      console.log(`[EMAIL_DEBUG] ❌ SMTP failed for ${to}: ${err.message}`);
+      logger.error(`[EMAIL] ❌ SMTP FAILED — to="${to}" error=${err.message}`);
+    }
+  } else {
+    console.log(`[EMAIL_DEBUG] SMTP not configured — skipping`);
+  }
+
+  // ── Strategy 2: Resend API (fallback) ───────────────────────────────
   if (env.email.resendKey) {
     try {
       const axios = require('axios');
-      const startTime = Date.now();
-      console.log(`[EMAIL_DEBUG] Attempting Resend API for ${to}...`);
+      console.log(`[EMAIL_DEBUG] Trying Resend API for ${to}...`);
       const response = await axios.post('https://api.resend.com/emails', {
         from: 'Research Connect <onboarding@resend.dev>',
         to,
@@ -30,54 +66,21 @@ const sendEmail = async (to, subject, html) => {
         },
         timeout: 15000
       });
-      const duration = Date.now() - startTime;
-      console.log(`[EMAIL_DEBUG] Resend SUCCESS for ${to} — id=${response.data?.id} duration=${duration}ms`);
-      logger.info(`[EMAIL] ✅ Resend SUCCESS — to="${to}" id=${response.data?.id || 'N/A'} duration=${duration}ms`);
+      console.log(`[EMAIL_DEBUG] ✅ Resend success for ${to} — id=${response.data?.id}`);
+      logger.info(`[EMAIL] ✅ Resend SUCCESS — to="${to}" id=${response.data?.id || 'N/A'}`);
       return true;
     } catch (err) {
       const status = err.response?.status;
       const body = err.response?.data ? JSON.stringify(err.response.data).slice(0, 300) : 'N/A';
-      console.log(`[EMAIL_DEBUG] Resend FAILED for ${to} — status=${status} body=${body}`);
-      logger.error(`[EMAIL] ❌ Resend FAILED (status=${status} body=${body}). Falling back to SMTP.`);
+      console.log(`[EMAIL_DEBUG] ❌ Resend failed for ${to} — status=${status} body=${body}`);
+      logger.error(`[EMAIL] ❌ Resend FAILED (status=${status} body=${body})`);
     }
   }
 
-  // Strategy 2: SMTP (nodemailer)
-  if (!env.email.user || !env.email.pass) {
-    console.log(`[EMAIL_DEBUG] SMTP not configured — no EMAIL_USER/EMAIL_PASS`);
-    logger.error(`[EMAIL] ❌ No EMAIL_USER/EMAIL_PASS configured. Email NOT sent.`);
-    return false;
-  }
-
-  try {
-    const nodemailer = require('nodemailer');
-    console.log(`[EMAIL_DEBUG] Attempting SMTP for ${to} via Gmail...`);
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: { user: env.email.user, pass: env.email.pass },
-      connectionTimeout: 10000,
-      greetingTimeout: 10000,
-      socketTimeout: 15000
-    });
-
-    const startTime = Date.now();
-    const info = await transporter.sendMail({
-      from: `"Research Connect" <${env.email.user}>`,
-      to,
-      subject,
-      html,
-      text
-    });
-    const duration = Date.now() - startTime;
-
-    console.log(`[EMAIL_DEBUG] SMTP SUCCESS for ${to} — messageId=${info.messageId} duration=${duration}ms`);
-    logger.info(`[EMAIL] ✅ SMTP SUCCESS — to="${to}" messageId=${info.messageId} duration=${duration}ms`);
-    return true;
-  } catch (err) {
-    console.log(`[EMAIL_DEBUG] SMTP FAILED for ${to} — error=${err.message}`);
-    logger.error(`[EMAIL] ❌ SMTP FAILED — to="${to}" error=${err.message}`);
-    return false;
-  }
+  // ── Both strategies failed ──────────────────────────────────────────
+  console.log(`[EMAIL_DEBUG] ALL strategies failed for ${to} — last SMTP error: ${smtpError}`);
+  logger.error(`[EMAIL] ❌ ALL strategies failed for ${to}`);
+  return false;
 };
 
 // Update these to match your real branding / support details
