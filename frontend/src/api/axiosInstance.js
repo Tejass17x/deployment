@@ -6,7 +6,7 @@ import { updateToken, logoutSuccess } from '../redux/slices/authSlice';
 // Use the backend url with suffix 'api' since in backend all routes are defined with prefix 'api'
 const axiosInstance = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || 'https://deployment-w687.onrender.com/api',
-  timeout: 30000, // Enforce standard 10-second timeout
+  timeout: 100000, // Enforce standard 10-second timeout
   withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
